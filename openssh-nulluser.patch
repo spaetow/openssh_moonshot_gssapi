@@ -1,0 +1,743 @@
+Index: auth-pam.c
+===================================================================
+--- openssh-5.3p1.orig/auth-pam.c
++++ openssh-5.3p1/auth-pam.c
+@@ -30,7 +30,7 @@
+  */
+ /*
+  * Copyright (c) 2003,2004 Damien Miller <djm@mindrot.org>
+- * Copyright (c) 2003,2004 Darren Tucker <dtucker@zip.com.au>
++ * Copyright (c) 2003,2004,2006 Darren Tucker <dtucker@zip.com.au>
+  *
+  * Permission to use, copy, modify, and distribute this software for any
+  * purpose with or without fee is hereby granted, provided that the above
+@@ -122,6 +122,10 @@ extern u_int utmp_len;
+  */
+ typedef pthread_t sp_pthread_t;
+ #else
++#define pthread_create openssh_pthread_create
++#define pthread_exit openssh_pthread_exit
++#define pthread_cancel openssh_pthread_cancel
++#define pthread_join openssh_pthread_join
+ typedef pid_t sp_pthread_t;
+ #endif
+ 
+@@ -272,6 +276,53 @@ sshpam_chauthtok_ruid(pam_handle_t *pamh
+ # define pam_chauthtok(a,b)	(sshpam_chauthtok_ruid((a), (b)))
+ #endif
+ 
++struct passwd *
++sshpam_getpw(const char *user)
++{
++	struct passwd *pw;
++
++	if ((pw = getpwnam(user)) != NULL)
++		return(pw);
++
++	debug("PAM: faking passwd struct for user '%.100s'", user);
++	if ((pw = getpwnam(SSH_PRIVSEP_USER)) == NULL)
++		return NULL;
++	pw->pw_name = xstrdup(user);	/* XXX leak */
++	pw->pw_shell = "/bin/true";
++	pw->pw_gecos = "sshd fake PAM user";
++	return (pw);
++}
++
++void
++sshpam_check_userchanged(void)
++{
++	int sshpam_err;
++	struct passwd *pw;
++	const char *user;
++
++	debug("sshpam_check_userchanged");
++	sshpam_err = pam_get_item(sshpam_handle, PAM_USER, &user);
++	if (sshpam_err != PAM_SUCCESS)
++		fatal("PAM: could not get PAM_USER: %s",
++		    pam_strerror(sshpam_handle, sshpam_err));
++	if (strcmp(user, sshpam_authctxt->pw->pw_name) != 0) {
++		debug("PAM: user mapped from '%.100s' to '%.100s'",
++		    sshpam_authctxt->pw->pw_name, user);
++		if ((pw = getpwnam(user)) == NULL)
++			fatal("PAM: could not get passwd entry for user "
++			    "'%.100s' provided by PAM_USER", user);
++		free(sshpam_authctxt->pw);
++		sshpam_authctxt->pw = pwcopy(pw);
++		sshpam_authctxt->valid = allowed_user(pw);
++		free(sshpam_authctxt->user);
++		sshpam_authctxt->user = xstrdup(user);
++		debug("PAM: user '%.100s' now %svalid", user,
++		    sshpam_authctxt->valid ? "" : "in");
++	}
++	debug("sshpam_check_userchanged: user is '%.100s'",
++	      sshpam_authctxt->pw->pw_name);
++}
++
+ void
+ sshpam_password_change_required(int reqd)
+ {
+@@ -294,7 +345,7 @@ sshpam_password_change_required(int reqd
+ static void
+ import_environments(Buffer *b)
+ {
+-	char *env;
++	char *env, *user;
+ 	u_int i, num_env;
+ 	int err;
+ 
+@@ -304,6 +355,14 @@ import_environments(Buffer *b)
+ 	/* Import variables set by do_pam_account */
+ 	sshpam_account_status = buffer_get_int(b);
+ 	sshpam_password_change_required(buffer_get_int(b));
++	user = buffer_get_string(b, NULL);
++	debug("PAM: user is '%.100s'",
++	      sshpam_authctxt->pw->pw_name);
++	debug("PAM: got username '%.100s' from thread", user);
++	if ((err = pam_set_item(sshpam_handle, PAM_USER, user)) != PAM_SUCCESS)
++		fatal("PAM: failed to set PAM_USER: %s", pam_strerror(sshpam_handle, err));
++	free(sshpam_authctxt->pw);
++	sshpam_authctxt->pw = pwcopy(sshpam_getpw(user));
+ 
+ 	/* Import environment from subprocess */
+ 	num_env = buffer_get_int(b);
+@@ -469,6 +528,10 @@ sshpam_thread(void *ctxtp)
+ 	if (sshpam_err != PAM_SUCCESS)
+ 		goto auth_fail;
+ 
++	debug("sshpam_thread: user is '%.100s'", sshpam_authctxt->pw->pw_name);
++	sshpam_check_userchanged();
++	debug("sshpam_thread: user is '%.100s'", sshpam_authctxt->pw->pw_name);
++
+ 	if (compat20) {
+ 		if (!do_pam_account()) {
+ 			sshpam_err = PAM_ACCT_EXPIRED;
+@@ -490,6 +553,9 @@ sshpam_thread(void *ctxtp)
+ 	buffer_put_int(&buffer, sshpam_account_status);
+ 	buffer_put_int(&buffer, sshpam_authctxt->force_pwchange);
+ 
++	debug("sshpam_thread: user is '%.100s'", sshpam_authctxt->pw->pw_name);
++	buffer_put_cstring(&buffer, sshpam_authctxt->pw->pw_name);
++
+ 	/* Export any environment strings set in child */
+ 	for(i = 0; environ[i] != NULL; i++)
+ 		; /* Count */
+@@ -907,6 +973,14 @@ do_pam_account(void)
+ 	debug3("PAM: %s pam_acct_mgmt = %d (%s)", __func__, sshpam_err,
+ 	    pam_strerror(sshpam_handle, sshpam_err));
+ 
++	debug("do_pam_account: user is '%.100s'", sshpam_authctxt->pw->pw_name);
++	sshpam_check_userchanged();
++	debug("do_pam_account: user is '%.100s'", sshpam_authctxt->pw->pw_name);
++	if (getpwnam(sshpam_authctxt->pw->pw_name) == NULL)
++		fatal("PAM: completed authentication but PAM account invalid");
++	debug("do_pam_account: user is '%.100s'", sshpam_authctxt->pw->pw_name);
++
++
+ 	if (sshpam_err != PAM_SUCCESS && sshpam_err != PAM_NEW_AUTHTOK_REQD) {
+ 		sshpam_account_status = 0;
+ 		return (sshpam_account_status);
+@@ -1206,6 +1280,8 @@ sshpam_auth_passwd(Authctxt *authctxt, c
+ 		    pam_strerror(sshpam_handle, sshpam_err));
+ 
+ 	sshpam_err = pam_authenticate(sshpam_handle, flags);
++
++	sshpam_check_userchanged();
+ 	sshpam_password = NULL;
+ 	if (sshpam_err == PAM_SUCCESS && authctxt->valid) {
+ 		debug("PAM: password authentication accepted for %.100s",
+Index: auth-pam.h
+===================================================================
+--- openssh-5.3p1.orig/auth-pam.h
++++ openssh-5.3p1/auth-pam.h
+@@ -46,5 +46,6 @@ void sshpam_thread_cleanup(void);
+ void sshpam_cleanup(void);
+ int sshpam_auth_passwd(Authctxt *, const char *);
+ int is_pam_session_open(void);
++struct passwd *sshpam_getpw(const char *);
+ 
+ #endif /* USE_PAM */
+Index: auth2-gss.c
+===================================================================
+--- openssh-5.3p1.orig/auth2-gss.c
++++ openssh-5.3p1/auth2-gss.c
+@@ -47,6 +47,7 @@
+ 
+ extern ServerOptions options;
+ 
++static void ssh_gssapi_userauth_error(Gssctxt *ctxt);
+ static void input_gssapi_token(int type, u_int32_t plen, void *ctxt);
+ static void input_gssapi_mic(int type, u_int32_t plen, void *ctxt);
+ static void input_gssapi_exchange_complete(int type, u_int32_t plen, void *ctxt);
+@@ -59,8 +60,8 @@ static int
+ userauth_gsskeyex(Authctxt *authctxt)
+ {
+ 	int authenticated = 0;
+-	Buffer b;
+-	gss_buffer_desc mic, gssbuf;
++	Buffer b, b2;
++	gss_buffer_desc mic, gssbuf, gssbuf2;
+ 	u_int len;
+ 
+ 	mic.value = packet_get_string(&len);
+@@ -74,13 +75,26 @@ userauth_gsskeyex(Authctxt *authctxt)
+ 	gssbuf.value = buffer_ptr(&b);
+ 	gssbuf.length = buffer_len(&b);
+ 
++	/* client may have used empty username to determine target
++	   name from GSSAPI context */
++	ssh_gssapi_buildmic(&b2, "", authctxt->service, "gssapi-keyex");
++
++	gssbuf2.value = buffer_ptr(&b2);
++	gssbuf2.length = buffer_len(&b2);
++
+ 	/* gss_kex_context is NULL with privsep, so we can't check it here */
+ 	if (!GSS_ERROR(PRIVSEP(ssh_gssapi_checkmic(gss_kex_context, 
+-	    &gssbuf, &mic))))
+-		authenticated = PRIVSEP(ssh_gssapi_userok(authctxt->user,
+-		    authctxt->pw));
++						   &gssbuf, &mic))) ||
++	    !GSS_ERROR(PRIVSEP(ssh_gssapi_checkmic(gss_kex_context, 
++						   &gssbuf2, &mic)))) {
++	    if (authctxt->valid && authctxt->user && authctxt->user[0]) {
++            authenticated = PRIVSEP(ssh_gssapi_userok(authctxt->user,
++                                                      authctxt->pw));
++	    }
++	}
+ 	
+ 	buffer_free(&b);
++	buffer_free(&b2);
+ 	xfree(mic.value);
+ 
+ 	return (authenticated);
+@@ -102,7 +116,10 @@ userauth_gssapi(Authctxt *authctxt)
+ 	u_int len;
+ 	u_char *doid = NULL;
+ 
+-	if (!authctxt->valid || authctxt->user == NULL)
++	/* authctxt->valid may be 0 if we haven't yet determined
++	   username from gssapi context. */
++
++	if (authctxt->user == NULL)
+ 		return (0);
+ 
+ 	mechs = packet_get_int();
+@@ -172,7 +189,7 @@ input_gssapi_token(int type, u_int32_t p
+ 	Gssctxt *gssctxt;
+ 	gss_buffer_desc send_tok = GSS_C_EMPTY_BUFFER;
+ 	gss_buffer_desc recv_tok;
+-	OM_uint32 maj_status, min_status, flags;
++	OM_uint32 maj_status, min_status, flags=0;
+ 	u_int len;
+ 
+ 	if (authctxt == NULL || (authctxt->methoddata == NULL && !use_privsep))
+@@ -190,6 +207,7 @@ input_gssapi_token(int type, u_int32_t p
+ 	xfree(recv_tok.value);
+ 
+ 	if (GSS_ERROR(maj_status)) {
++        	ssh_gssapi_userauth_error(gssctxt);
+ 		if (send_tok.length != 0) {
+ 			packet_start(SSH2_MSG_USERAUTH_GSSAPI_ERRTOK);
+ 			packet_put_string(send_tok.value, send_tok.length);
+@@ -253,6 +271,32 @@ input_gssapi_errtok(int type, u_int32_t 
+ 	gss_release_buffer(&maj_status, &send_tok);
+ }
+ 
++static void
++gssapi_set_username(Authctxt *authctxt)
++{
++    char *lname = NULL;
++
++    if ((authctxt->user == NULL) || (authctxt->user[0] == '\0')) {
++        PRIVSEP(ssh_gssapi_localname(&lname));
++        if (lname && lname[0] != '\0') {
++            if (authctxt->user) xfree(authctxt->user);
++            authctxt->user = lname;
++            debug("set username to %s from gssapi context", lname);
++            authctxt->pw = PRIVSEP(getpwnamallow(authctxt->user));
++            if (authctxt->pw) {
++                authctxt->valid = 1;
++#ifdef USE_PAM
++                if (options.use_pam)
++                    PRIVSEP(start_pam(authctxt));
++#endif
++            }
++        } else {
++            debug("failed to set username from gssapi context");
++            packet_send_debug("failed to set username from gssapi context");
++        }
++    }
++}
++
+ /*
+  * This is called when the client thinks we've completed authentication.
+  * It should only be enabled in the dispatch handler by the function above,
+@@ -269,6 +313,8 @@ input_gssapi_exchange_complete(int type,
+ 	if (authctxt == NULL || (authctxt->methoddata == NULL && !use_privsep))
+ 		fatal("No authentication or GSSAPI context");
+ 
++	gssapi_set_username(authctxt);
++
+ 	gssctxt = authctxt->methoddata;
+ 
+ 	/*
+@@ -278,8 +324,13 @@ input_gssapi_exchange_complete(int type,
+ 
+ 	packet_check_eom();
+ 
+-	authenticated = PRIVSEP(ssh_gssapi_userok(authctxt->user,
+-	    authctxt->pw));
++	/* user should be set if valid but we double-check here */
++	if (authctxt->valid && authctxt->user && authctxt->user[0]) {
++	    authenticated = PRIVSEP(ssh_gssapi_userok(authctxt->user,
++						      authctxt->pw));
++	} else {
++	    authenticated = 0;
++	}
+ 
+ 	authctxt->postponed = 0;
+ 	dispatch_set(SSH2_MSG_USERAUTH_GSSAPI_TOKEN, NULL);
+@@ -320,9 +371,15 @@ input_gssapi_mic(int type, u_int32_t ple
+ 	gssbuf.value = buffer_ptr(&b);
+ 	gssbuf.length = buffer_len(&b);
+ 
++    gssapi_set_username(authctxt);
++
+ 	if (!GSS_ERROR(PRIVSEP(ssh_gssapi_checkmic(gssctxt, &gssbuf, &mic))))
+-		authenticated = 
+-		    PRIVSEP(ssh_gssapi_userok(authctxt->user, authctxt->pw));
++	    if (authctxt->valid && authctxt->user && authctxt->user[0]) {
++            authenticated =
++	      PRIVSEP(ssh_gssapi_userok(authctxt->user, authctxt->pw));
++	    } else {
++            authenticated = 0;
++	    }
+ 	else
+ 		logit("GSSAPI MIC check failed");
+ 
+@@ -339,6 +396,23 @@ input_gssapi_mic(int type, u_int32_t ple
+ 	userauth_finish(authctxt, authenticated, "gssapi-with-mic", NULL);
+ }
+ 
++static void ssh_gssapi_userauth_error(Gssctxt *ctxt) {
++	char *errstr;
++	OM_uint32 maj,min;
++	
++	errstr=PRIVSEP(ssh_gssapi_last_error(ctxt,&maj,&min));
++	if (errstr) {
++		packet_start(SSH2_MSG_USERAUTH_GSSAPI_ERROR);
++		packet_put_int(maj);
++		packet_put_int(min);
++		packet_put_cstring(errstr);
++		packet_put_cstring("");
++		packet_send();
++		packet_write_wait();
++		xfree(errstr);
++	}
++}
++
+ Authmethod method_gsskeyex = {
+ 	"gssapi-keyex",
+ 	userauth_gsskeyex,
+Index: auth2.c
+===================================================================
+--- openssh-5.3p1.orig/auth2.c
++++ openssh-5.3p1/auth2.c
+@@ -229,6 +229,23 @@ input_userauth_request(int type, u_int32
+ 	user = packet_get_string(NULL);
+ 	service = packet_get_string(NULL);
+ 	method = packet_get_string(NULL);
++#ifdef GSSAPI
++	if (user[0] == '\0') {
++	  debug("received empty username for %s", method);
++	  if (strcmp(method, "gssapi-keyex") == 0) {
++	    char *lname = NULL;
++	    PRIVSEP(ssh_gssapi_localname(&lname));
++	    if (lname && lname[0] != '\0') {
++	      xfree(user);
++	      user = lname;
++	      debug("set username to %s from gssapi context", user);
++	    } else {
++	      debug("failed to set username from gssapi context");
++	      packet_send_debug("failed to set username from gssapi context");
++	    }
++	  }
++	}
++#endif
+ 	debug("userauth-request for user %s service %s method %s", user, service, method);
+ 	debug("attempt %d failures %d", authctxt->attempt, authctxt->failures);
+ 
+@@ -240,37 +257,62 @@ input_userauth_request(int type, u_int32
+ 	if ((style = strchr(user, ':')) != NULL)
+ 		*style++ = 0;
+ 
+-	if (authctxt->attempt++ == 0) {
+-		/* setup auth context */
++	/* If first time or username changed or empty username,
++	   setup/reset authentication context. */
++	if ((authctxt->attempt++ == 0) ||
++	    (strcmp(user, authctxt->user) != 0) ||
++	    (strcmp(user, "") == 0)) {
++		if (authctxt->user) {
++		    xfree(authctxt->user);
++		    authctxt->user = NULL;
++		}
++		authctxt->valid = 0;
++        authctxt->user = xstrdup(user);
++        if (strcmp(service, "ssh-connection") != 0) {
++            packet_disconnect("Unsupported service %s", service);
++        }
++#ifdef GSSAPI
++		/* If we're going to set the username based on the
++		   GSSAPI context later, then wait until then to
++		   verify it. Just put in placeholders for now. */
++		if ((strcmp(user, "") == 0) &&
++		    ((strcmp(method, "gssapi") == 0) ||
++		     (strcmp(method, "gssapi-with-mic") == 0))) {
++			authctxt->pw = fakepw();
++		} else {
++#endif
+ 		authctxt->pw = PRIVSEP(getpwnamallow(user));
+-		authctxt->user = xstrdup(user);
+-		if (authctxt->pw && strcmp(service, "ssh-connection")==0) {
++		if (authctxt->pw) {
+ 			authctxt->valid = 1;
+ 			debug2("input_userauth_request: setting up authctxt for %s", user);
+ 		} else {
+ 			logit("input_userauth_request: invalid user %s", user);
+ 			authctxt->pw = fakepw();
+ 		}
++		#ifdef GSSAPI
++		} /*empty username from GSSAPI*/
++#endif /*GSSAPI*/
+ #ifdef USE_PAM
+ 		if (options.use_pam)
+ 			PRIVSEP(start_pam(authctxt));
+ #endif
+ 		setproctitle("%s%s", authctxt->valid ? user : "unknown",
+ 		    use_privsep ? " [net]" : "");
+-		authctxt->service = xstrdup(service);
+-		authctxt->style = style ? xstrdup(style) : NULL;
++			     if (authctxt->attempt == 1) {
++			       authctxt->service = xstrdup(service);
++			       authctxt->style = style ? xstrdup(style) : NULL;
+ #ifdef WITH_SELINUX
+-		authctxt->role = role ? xstrdup(role) : NULL;
++			       authctxt->role = role ? xstrdup(role) : NULL;
+ #endif
+-		if (use_privsep) {
+-			mm_inform_authserv(service, style);
++			       if (use_privsep) {
++				 mm_inform_authserv(service, style);
+ #ifdef WITH_SELINUX
+-			mm_inform_authrole(role);
++				 mm_inform_authrole(role);
+ #endif
+-		}
++			       }
+ 		userauth_banner();
+-	} else if (strcmp(user, authctxt->user) != 0 ||
+-	    strcmp(service, authctxt->service) != 0) {
++			     }
++	}else if (strcmp(service, authctxt->service) != 0) {
+ 		packet_disconnect("Change of username or service not allowed: "
+ 		    "(%s,%s) -> (%s,%s)",
+ 		    authctxt->user, authctxt->service, user, service);
+Index: gss-serv.c
+===================================================================
+--- openssh-5.3p1.orig/gss-serv.c
++++ openssh-5.3p1/gss-serv.c
+@@ -80,7 +80,7 @@ ssh_gssapi_generic_localname(ssh_gssapi_
+   gss_buffer_desc lbuffer;
+   OM_uint32 major, minor;
+   *localname = NULL;
+-  major = gss_localname(&minor, client->cred_name, NULL, &lbuffer);
++  major = gss_localname(&minor, client->ctx_name, NULL, &lbuffer);
+   if (GSS_ERROR(major))
+     return 0;
+   if (lbuffer.value == NULL)
+@@ -521,6 +521,20 @@ ssh_gssapi_userok(char *user, struct pas
+ 	return (0);
+ }
+ 
++
++/* Privileged */
++int
++ssh_gssapi_localname(char **user)
++{
++    	*user = NULL;
++	if (gssapi_client.mech && gssapi_client.mech->localname) {
++		return((*gssapi_client.mech->localname)(&gssapi_client,user));
++	} else {
++		debug("Unknown client authentication type");
++	}
++	return(0);
++}
++
+ /* These bits are only used for rekeying. The unpriviledged child is running 
+  * as the user, the monitor is root.
+  *
+Index: key.c
+===================================================================
+--- openssh-5.3p1.orig/key.c
++++ openssh-5.3p1/key.c
+@@ -1833,7 +1833,10 @@ key_is_private(const Key *k)
+ 	switch (k->type) {
+ 	case KEY_RSA1:
+ 	case KEY_RSA:
+-		return k->rsa->d != NULL;
++		if (k->rsa != NULL)
++			return k->rsa->d != NULL;
++		else
++			return 0;
+ 	case KEY_DSA:
+ 		return k->dsa->priv_key != NULL;
+ #ifdef OPENSSL_HAS_ECC
+Index: misc.c
+===================================================================
+--- openssh-5.3p1.orig/misc.c
++++ openssh-5.3p1/misc.c
+@@ -220,6 +220,20 @@ pwcopy(struct passwd *pw)
+ 	return copy;
+ }
+ 
++void
++pwfree(struct passwd *pw)
++{
++	xfree(pw->pw_name);
++	xfree(pw->pw_passwd);
++	xfree(pw->pw_gecos);
++#ifdef HAVE_PW_CLASS_IN_PASSWD
++	xfree(pw->pw_class);
++#endif
++	xfree(pw->pw_dir);
++	xfree(pw->pw_shell);
++	xfree(pw);
++}
++
+ /*
+  * Convert ASCII string to TCP/IP port number.
+  * Port must be >=0 and <=65535.
+Index: misc.h
+===================================================================
+--- openssh-5.3p1.orig/misc.h
++++ openssh-5.3p1/misc.h
+@@ -37,6 +37,7 @@ void	 ms_subtract_diff(struct timeval *,
+ void	 ms_to_timeval(struct timeval *, int);
+ 
+ struct passwd *pwcopy(struct passwd *);
++void	 pwfree(struct passwd *);
+ const char *ssh_gai_strerror(int);
+ 
+ typedef struct arglist arglist;
+Index: monitor.c
+===================================================================
+--- openssh-5.3p1.orig/monitor.c
++++ openssh-5.3p1/monitor.c
+@@ -179,6 +179,8 @@ int mm_answer_gss_accept_ctx(int, Buffer
+ int mm_answer_gss_userok(int, Buffer *);
+ int mm_answer_gss_checkmic(int, Buffer *);
+ int mm_answer_gss_sign(int, Buffer *);
++int mm_answer_gss_error(int, Buffer *);
++int mm_answer_gss_localname(int, Buffer *);
+ int mm_answer_gss_updatecreds(int, Buffer *);
+ #endif
+ 
+@@ -263,6 +265,8 @@ struct mon_table mon_dispatch_proto20[] 
+     {MONITOR_REQ_GSSUSEROK, MON_AUTH, mm_answer_gss_userok},
+     {MONITOR_REQ_GSSCHECKMIC, MON_ISAUTH, mm_answer_gss_checkmic},
+     {MONITOR_REQ_GSSSIGN, MON_ONCE, mm_answer_gss_sign},
++    {MONITOR_REQ_GSSERR, MON_ISAUTH | MON_ONCE, mm_answer_gss_error},
++    {MONITOR_REQ_GSSLOCALNAME, MON_ISAUTH, mm_answer_gss_localname},
+ #endif
+ #ifdef JPAKE
+     {MONITOR_REQ_JPAKE_GET_PWDATA, MON_ONCE, mm_answer_jpake_get_pwdata},
+@@ -279,6 +283,7 @@ struct mon_table mon_dispatch_postauth20
+     {MONITOR_REQ_GSSSETUP, 0, mm_answer_gss_setup_ctx},
+     {MONITOR_REQ_GSSSTEP, 0, mm_answer_gss_accept_ctx},
+     {MONITOR_REQ_GSSSIGN, 0, mm_answer_gss_sign},
++    {MONITOR_REQ_GSSERR, 0, mm_answer_gss_error},
+     {MONITOR_REQ_GSSUPCREDS, 0, mm_answer_gss_updatecreds},
+ #endif
+     {MONITOR_REQ_MODULI, 0, mm_answer_moduli},
+@@ -315,8 +320,14 @@ struct mon_table mon_dispatch_proto15[] 
+     {MONITOR_REQ_SKEYQUERY, MON_ISAUTH, mm_answer_skeyquery},
+     {MONITOR_REQ_SKEYRESPOND, MON_AUTH, mm_answer_skeyrespond},
+ #endif
++#ifdef GSSAPI
++    {MONITOR_REQ_GSSSETUP, MON_ISAUTH, mm_answer_gss_setup_ctx},
++    {MONITOR_REQ_GSSSTEP, MON_ISAUTH, mm_answer_gss_accept_ctx},
++    {MONITOR_REQ_GSSSIGN, MON_ONCE, mm_answer_gss_sign},
++    {MONITOR_REQ_GSSUSEROK, MON_AUTH, mm_answer_gss_userok},
++#endif
+ #ifdef USE_PAM
+-    {MONITOR_REQ_PAM_START, MON_ONCE, mm_answer_pam_start},
++    {MONITOR_REQ_PAM_START, MON_ISAUTH, mm_answer_pam_start},
+     {MONITOR_REQ_PAM_ACCOUNT, 0, mm_answer_pam_account},
+     {MONITOR_REQ_PAM_INIT_CTX, MON_ISAUTH, mm_answer_pam_init_ctx},
+     {MONITOR_REQ_PAM_QUERY, MON_ISAUTH, mm_answer_pam_query},
+@@ -401,9 +412,10 @@ monitor_child_preauth(Authctxt *_authctx
+ 		/* Permit requests for moduli and signatures */
+ 		monitor_permit(mon_dispatch, MONITOR_REQ_MODULI, 1);
+ 		monitor_permit(mon_dispatch, MONITOR_REQ_SIGN, 1);
+-#ifdef GSSAPI
++#ifdef GSSAPI		
+ 		/* and for the GSSAPI key exchange */
+ 		monitor_permit(mon_dispatch, MONITOR_REQ_GSSSETUP, 1);
++		monitor_permit(mon_dispatch, MONITOR_REQ_GSSERR, 1);
+ #endif
+ 	} else {
+ 		mon_dispatch = mon_dispatch_proto15;
+@@ -507,14 +519,20 @@ monitor_child_postauth(struct monitor *p
+ 		monitor_permit(mon_dispatch, MONITOR_REQ_MODULI, 1);
+ 		monitor_permit(mon_dispatch, MONITOR_REQ_SIGN, 1);
+ 		monitor_permit(mon_dispatch, MONITOR_REQ_TERM, 1);
++
+ #ifdef GSSAPI
+ 		/* and for the GSSAPI key exchange */
+-		monitor_permit(mon_dispatch, MONITOR_REQ_GSSSETUP, 1);
+-#endif		
++		monitor_permit(mon_dispatch, MONITOR_REQ_GSSSETUP,1);
++		monitor_permit(mon_dispatch, MONITOR_REQ_GSSERR,1);
++#endif
++
+ 	} else {
+ 		mon_dispatch = mon_dispatch_postauth15;
+ 		monitor_permit(mon_dispatch, MONITOR_REQ_TERM, 1);
+ 	}
++#ifdef GSSAPI		
++	monitor_permit(mon_dispatch, MONITOR_REQ_GSSERR, 1);
++#endif
+ 	if (!no_pty_flag) {
+ 		monitor_permit(mon_dispatch, MONITOR_REQ_PTY, 1);
+ 		monitor_permit(mon_dispatch, MONITOR_REQ_PTYCLEANUP, 1);
+@@ -2208,6 +2226,45 @@ mm_answer_gss_userok(int sock, Buffer *m
+ 	return (authenticated);
+ }
+ 
++int
++mm_answer_gss_error(int socket, Buffer *m) {
++        OM_uint32 major,minor;
++        char *msg;
++
++	msg=ssh_gssapi_last_error(gsscontext,&major,&minor);
++	buffer_clear(m);
++	buffer_put_int(m,major);
++	buffer_put_int(m,minor);
++	buffer_put_cstring(m,msg);
++
++	mm_request_send(socket,MONITOR_ANS_GSSERR,m);
++
++	xfree(msg);
++	
++        return(0);
++}
++
++int
++mm_answer_gss_localname(int socket, Buffer *m) {
++	char *name;
++
++	ssh_gssapi_localname(&name);
++
++        buffer_clear(m);
++	if (name) {
++	    buffer_put_cstring(m, name);
++	    debug3("%s: sending result %s", __func__, name);
++	    xfree(name);
++	} else {
++	    buffer_put_cstring(m, "");
++	    debug3("%s: sending result \"\"", __func__);
++	}
++
++        mm_request_send(socket, MONITOR_ANS_GSSLOCALNAME, m);
++
++        return(0);
++}
++
+ int 
+ mm_answer_gss_sign(int socket, Buffer *m)
+ {
+Index: monitor.h
+===================================================================
+--- openssh-5.3p1.orig/monitor.h
++++ openssh-5.3p1/monitor.h
+@@ -55,6 +55,8 @@ enum monitor_reqtype {
+ 	MONITOR_REQ_GSSSETUP, MONITOR_ANS_GSSSETUP,
+ 	MONITOR_REQ_GSSSTEP, MONITOR_ANS_GSSSTEP,
+ 	MONITOR_REQ_GSSUSEROK, MONITOR_ANS_GSSUSEROK,
++	MONITOR_REQ_GSSLOCALNAME, MONITOR_ANS_GSSLOCALNAME,
++	MONITOR_REQ_GSSERR, MONITOR_ANS_GSSERR,
+ 	MONITOR_REQ_GSSCHECKMIC, MONITOR_ANS_GSSCHECKMIC,
+ 	MONITOR_REQ_GSSSIGN, MONITOR_ANS_GSSSIGN,
+ 	MONITOR_REQ_GSSUPCREDS, MONITOR_ANS_GSSUPCREDS,
+Index: monitor_wrap.c
+===================================================================
+--- openssh-5.3p1.orig/monitor_wrap.c
++++ openssh-5.3p1/monitor_wrap.c
+@@ -1363,6 +1363,54 @@ mm_ssh_gssapi_userok(char *user, struct 
+ 	return (authenticated);
+ }
+ 
++char *
++mm_ssh_gssapi_last_error(Gssctxt *ctx, OM_uint32 *major, OM_uint32 *minor) {
++	Buffer m;
++	OM_uint32 maj,min;
++	char *errstr;
++	
++	buffer_init(&m);
++
++	mm_request_send(pmonitor->m_recvfd, MONITOR_REQ_GSSERR, &m);
++	mm_request_receive_expect(pmonitor->m_recvfd, MONITOR_ANS_GSSERR, &m);
++
++	maj = buffer_get_int(&m);
++	min = buffer_get_int(&m);
++
++	if (major) *major=maj;
++	if (minor) *minor=min;
++	
++	errstr=buffer_get_string(&m,NULL);
++
++	buffer_free(&m);
++	
++	return(errstr);
++}	
++
++int
++mm_ssh_gssapi_localname(char **lname)
++{
++        Buffer m;
++
++	buffer_init(&m);
++        mm_request_send(pmonitor->m_recvfd, MONITOR_REQ_GSSLOCALNAME, &m);
++
++        debug3("%s: waiting for MONITOR_ANS_GSSLOCALNAME", __func__);
++        mm_request_receive_expect(pmonitor->m_recvfd, MONITOR_ANS_GSSLOCALNAME,
++                                  &m);
++
++	*lname = buffer_get_string(&m, NULL);
++
++        buffer_free(&m);
++	if (lname[0] == '\0') {
++	    debug3("%s: gssapi identity mapping failed", __func__);
++	} else {
++	    debug3("%s: gssapi identity mapped to %s", __func__, *lname);
++	}
++	
++        return(0);
++}	
++
+ OM_uint32
+ mm_ssh_gssapi_sign(Gssctxt *ctx, gss_buffer_desc *data, gss_buffer_desc *hash)
+ {
+Index: monitor_wrap.h
+===================================================================
+--- openssh-5.3p1.orig/monitor_wrap.h
++++ openssh-5.3p1/monitor_wrap.h
+@@ -64,6 +64,8 @@ OM_uint32 mm_ssh_gssapi_accept_ctx(Gssct
+ int mm_ssh_gssapi_userok(char *user, struct passwd *);
+ OM_uint32 mm_ssh_gssapi_checkmic(Gssctxt *, gss_buffer_t, gss_buffer_t);
+ OM_uint32 mm_ssh_gssapi_sign(Gssctxt *, gss_buffer_t, gss_buffer_t);
++int mm_ssh_gssapi_localname(char **user);
++char *mm_ssh_gssapi_last_error(Gssctxt *ctxt, OM_uint32 *maj, OM_uint32 *min);
+ int mm_ssh_gssapi_update_creds(ssh_gssapi_ccache *);
+ #endif
+ 

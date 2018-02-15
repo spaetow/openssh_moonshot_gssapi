@@ -1,0 +1,388 @@
+Index: openssh-5.3p1/config.h.in
+===================================================================
+--- openssh-5.3p1.orig/config.h.in
++++ openssh-5.3p1/config.h.in
+@@ -471,6 +471,9 @@
+ /* Define to 1 if you have the <gssapi_generic.h> header file. */
+ #undef HAVE_GSSAPI_GENERIC_H
+ 
++/* Define to 1 if you have the <gssapi/gssapi_ext.h> header file. */
++#undef HAVE_GSSAPI_GSSAPI_EXT_H
++
+ /* Define to 1 if you have the <gssapi/gssapi_generic.h> header file. */
+ #undef HAVE_GSSAPI_GSSAPI_GENERIC_H
+ 
+@@ -486,6 +489,12 @@
+ /* Define to 1 if you have the <gssapi_krb5.h> header file. */
+ #undef HAVE_GSSAPI_KRB5_H
+ 
++/* Define to 1 if you have the `gss_localname' function. */
++#undef HAVE_GSS_LOCALNAME
++
++/* Define to 1 if you have the `gss_userok' function. */
++#undef HAVE_GSS_USEROK
++
+ /* Define if HEADER.ad exists in arpa/nameser.h */
+ #undef HAVE_HEADER_AD
+ 
+Index: openssh-5.3p1/configure
+===================================================================
+--- openssh-5.3p1.orig/configure
++++ openssh-5.3p1/configure
+@@ -31365,8 +31365,110 @@ fi
+ 
+ done
+ 
+-
+ 		LIBS="$LIBS $K5LIBS"
++
++
++for ac_func in gss_localname gss_userok
++do
++as_ac_var=`$as_echo "ac_cv_func_$ac_func" | $as_tr_sh`
++{ $as_echo "$as_me:$LINENO: checking for $ac_func" >&5
++$as_echo_n "checking for $ac_func... " >&6; }
++if { as_var=$as_ac_var; eval "test \"\${$as_var+set}\" = set"; }; then
++  $as_echo_n "(cached) " >&6
++else
++  cat >conftest.$ac_ext <<_ACEOF
++/* confdefs.h.  */
++_ACEOF
++cat confdefs.h >>conftest.$ac_ext
++cat >>conftest.$ac_ext <<_ACEOF
++/* end confdefs.h.  */
++/* Define $ac_func to an innocuous variant, in case <limits.h> declares $ac_func.
++   For example, HP-UX 11i <limits.h> declares gettimeofday.  */
++#define $ac_func innocuous_$ac_func
++
++/* System header to define __stub macros and hopefully few prototypes,
++    which can conflict with char $ac_func (); below.
++    Prefer <limits.h> to <assert.h> if __STDC__ is defined, since
++    <limits.h> exists even on freestanding compilers.  */
++
++#ifdef __STDC__
++# include <limits.h>
++#else
++# include <assert.h>
++#endif
++
++#undef $ac_func
++
++/* Override any GCC internal prototype to avoid an error.
++   Use char because int might match the return type of a GCC
++   builtin and then its argument prototype would still apply.  */
++#ifdef __cplusplus
++extern "C"
++#endif
++char $ac_func ();
++/* The GNU C library defines this for functions which it implements
++    to always fail with ENOSYS.  Some functions are actually named
++    something starting with __ and the normal name is an alias.  */
++#if defined __stub_$ac_func || defined __stub___$ac_func
++choke me
++#endif
++
++int
++main ()
++{
++return $ac_func ();
++  ;
++  return 0;
++}
++_ACEOF
++rm -f conftest.$ac_objext conftest$ac_exeext
++if { (ac_try="$ac_link"
++case "(($ac_try" in
++  *\"* | *\`* | *\\*) ac_try_echo=\$ac_try;;
++  *) ac_try_echo=$ac_try;;
++esac
++eval ac_try_echo="\"\$as_me:$LINENO: $ac_try_echo\""
++$as_echo "$ac_try_echo") >&5
++  (eval "$ac_link") 2>conftest.er1
++  ac_status=$?
++  grep -v '^ *+' conftest.er1 >conftest.err
++  rm -f conftest.er1
++  cat conftest.err >&5
++  $as_echo "$as_me:$LINENO: \$? = $ac_status" >&5
++  (exit $ac_status); } && {
++	 test -z "$ac_c_werror_flag" ||
++	 test ! -s conftest.err
++       } && test -s conftest$ac_exeext && {
++	 test "$cross_compiling" = yes ||
++	 $as_test_x conftest$ac_exeext
++       }; then
++  eval "$as_ac_var=yes"
++else
++  $as_echo "$as_me: failed program was:" >&5
++sed 's/^/| /' conftest.$ac_ext >&5
++
++	eval "$as_ac_var=no"
++fi
++
++rm -rf conftest.dSYM
++rm -f core conftest.err conftest.$ac_objext conftest_ipa8_conftest.oo \
++      conftest$ac_exeext conftest.$ac_ext
++fi
++ac_res=`eval 'as_val=${'$as_ac_var'}
++		 $as_echo "$as_val"'`
++	       { $as_echo "$as_me:$LINENO: result: $ac_res" >&5
++$as_echo "$ac_res" >&6; }
++as_val=`eval 'as_val=${'$as_ac_var'}
++		 $as_echo "$as_val"'`
++   if test "x$as_val" = x""yes; then
++  cat >>confdefs.h <<_ACEOF
++#define `$as_echo "HAVE_$ac_func" | $as_tr_cpp` 1
++_ACEOF
++
++fi
++done
++
++
+ 		{ $as_echo "$as_me:$LINENO: checking for library containing k_hasafs" >&5
+ $as_echo_n "checking for library containing k_hasafs... " >&6; }
+ if test "${ac_cv_search_k_hasafs+set}" = set; then
+Index: openssh-5.3p1/configure.ac
+===================================================================
+--- openssh-5.3p1.orig/configure.ac
++++ openssh-5.3p1/configure.ac
+@@ -3653,8 +3653,9 @@ AC_ARG_WITH(kerberos5,
+ 		AC_CHECK_HEADERS(gssapi.h gssapi/gssapi.h)
+ 		AC_CHECK_HEADERS(gssapi_krb5.h gssapi/gssapi_krb5.h)
+ 		AC_CHECK_HEADERS(gssapi_generic.h gssapi/gssapi_generic.h)
+-
+ 		LIBS="$LIBS $K5LIBS"
++AC_CHECK_FUNCS(gss_localname gss_userok)
++
+ 		AC_SEARCH_LIBS(k_hasafs, kafs, AC_DEFINE(USE_AFS, 1,
+ 			[Define this if you want to use libkafs' AFS support]))
+ 	fi
+Index: openssh-5.3p1/ssh-gss.h
+===================================================================
+--- openssh-5.3p1.orig/ssh-gss.h
++++ openssh-5.3p1/ssh-gss.h
+@@ -33,6 +33,9 @@
+ #elif defined(HAVE_GSSAPI_GSSAPI_H)
+ #include <gssapi/gssapi.h>
+ #endif
++#ifdef HAVE_GSSAPI_GSSAPI_EXT_H
++#include <gssapi/gssapi_ext.h>
++#endif
+ 
+ #ifdef KRB5
+ # ifndef HEIMDAL
+@@ -80,10 +83,11 @@ typedef struct {
+ } ssh_gssapi_ccache;
+ 
+ typedef struct {
++  gss_OID_desc oid;
+ 	gss_buffer_desc displayname;
+ 	gss_buffer_desc exportedname;
+ 	gss_cred_id_t creds;
+-	gss_name_t name;
++  gss_name_t cred_name, ctx_name;
+ 	struct ssh_gssapi_mech_struct *mech;
+ 	ssh_gssapi_ccache store;
+ 	int used;
+@@ -106,7 +110,7 @@ typedef struct {
+ 	OM_uint32	minor; /* both */
+ 	gss_ctx_id_t	context; /* both */
+ 	gss_name_t	name; /* both */
+-	gss_OID		oid; /* client */
++	gss_OID		oid; /* both */
+ 	gss_cred_id_t	creds; /* server */
+ 	gss_name_t	client; /* server */
+ 	gss_cred_id_t	client_creds; /* both */
+Index: openssh-5.3p1/gss-serv.c
+===================================================================
+--- openssh-5.3p1.orig/gss-serv.c
++++ openssh-5.3p1/gss-serv.c
+@@ -54,16 +54,71 @@
+ extern ServerOptions options;
+ 
+ static ssh_gssapi_client gssapi_client =
+-    { GSS_C_EMPTY_BUFFER, GSS_C_EMPTY_BUFFER,
+-    GSS_C_NO_CREDENTIAL, GSS_C_NO_NAME,  NULL, {NULL, NULL, NULL}, 0, 0};
++  { {0, NULL}, GSS_C_EMPTY_BUFFER, GSS_C_EMPTY_BUFFER,
++    GSS_C_NO_CREDENTIAL, GSS_C_NO_NAME, GSS_C_NO_NAME, NULL, {NULL, NULL, NULL}, 0, 0};
+ 
+ ssh_gssapi_mech gssapi_null_mech =
+     { NULL, NULL, {0, NULL}, NULL, NULL, NULL, NULL, NULL};
++/* Generic GSS-API support*/
++#ifdef HAVE_GSS_USEROK
++static int ssh_gssapi_generic_userok(
++				 ssh_gssapi_client *client, char *user) {
++  if (gss_userok(client->ctx_name, user)) {
++    debug("userok succeded for %s", user);
++    return 1;
++  } else {
++    debug("userok failed for %s", user);
++    return 0;
++  }
++}
++#endif
++
++static int
++ssh_gssapi_generic_localname(ssh_gssapi_client *client,
++			  char **localname) {
++  #ifdef HAVE_GSS_LOCALNAME
++  gss_buffer_desc lbuffer;
++  OM_uint32 major, minor;
++  *localname = NULL;
++  major = gss_localname(&minor, client->cred_name, NULL, &lbuffer);
++  if (GSS_ERROR(major))
++    return 0;
++  if (lbuffer.value == NULL)
++    return 0;
++  *localname = xmalloc(lbuffer.length+1);
++  if (*localname) {
++    memcpy(*localname, lbuffer.value, lbuffer.length);
++    (*localname)[lbuffer.length] = '\0';
++  }
++  gss_release_buffer(&minor, &lbuffer);
++  if (*localname)
++    return 1;
++  return 0;
++  #else
++  debug("No generic gss_localname");
++  return 0;
++  #endif
++      }
++
++#ifdef HAVE_GSS_USEROK
++static ssh_gssapi_mech ssh_gssapi_generic_mech = {
++  NULL, NULL,
++  {0, NULL},
++  NULL, /* dochild */
++  ssh_gssapi_generic_userok,
++  ssh_gssapi_generic_localname,
++  NULL,
++  NULL};
++static const ssh_gssapi_mech *ssh_gssapi_generic_mech_ptr = &ssh_gssapi_generic_mech;
++#else /*HAVE_GSS_USEROK*/
++static const ssh_gssapi_mech *ssh_gssapi_generic_mech_ptr = NULL;
++#endif
+ 
+ #ifdef KRB5
+ extern ssh_gssapi_mech gssapi_kerberos_mech;
+ #endif
+ 
++
+ ssh_gssapi_mech* supported_mechs[]= {
+ #ifdef KRB5
+ 	&gssapi_kerberos_mech,
+@@ -156,6 +211,24 @@ ssh_gssapi_supported_oids(gss_OID_set *o
+ 	OM_uint32 min_status;
+ 	int present;
+ 	gss_OID_set supported;
++	/* If we have a generic mechanism all OIDs supported */
++	if (ssh_gssapi_generic_mech_ptr) {
++	  gss_OID_desc except_oids[3];
++	  gss_OID_set_desc except_attrs;
++	  except_oids[0] = *GSS_C_MA_MECH_NEGO;
++	  except_oids[1] = *GSS_C_MA_NOT_MECH;
++	  except_oids[2] = *GSS_C_MA_DEPRECATED;
++
++	  except_attrs.count = sizeof(except_oids)/sizeof(except_oids[0]);
++	  except_attrs.elements = except_oids;
++
++	  if (!GSS_ERROR(gss_indicate_mechs_by_attrs(&min_status,
++						     GSS_C_NO_OID_SET,
++						     &except_attrs,
++						     GSS_C_NO_OID_SET,
++						     oidset)))
++	    return;
++	}
+ 
+ 	gss_create_empty_oid_set(&min_status, oidset);
+ 
+@@ -289,8 +362,8 @@ ssh_gssapi_getclient(Gssctxt *ctx, ssh_g
+ 	gss_buffer_desc ename = GSS_C_EMPTY_BUFFER;
+ 
+ 	if (options.gss_store_rekey && client->used && ctx->client_creds) {
+-		if (client->mech->oid.length != ctx->oid->length ||
+-		    (memcmp(client->mech->oid.elements,
++		if (client->oid.length != ctx->oid->length ||
++		    (memcmp(client->oid.elements,
+ 		     ctx->oid->elements, ctx->oid->length) !=0)) {
+ 			debug("Rekeyed credentials have different mechanism");
+ 			return GSS_S_COMPLETE;
+@@ -303,7 +376,7 @@ ssh_gssapi_getclient(Gssctxt *ctx, ssh_g
+ 			return (ctx->major);
+ 		}
+ 
+-		ctx->major = gss_compare_name(&ctx->minor, client->name, 
++		ctx->major = gss_compare_name(&ctx->minor, client->cred_name, 
+ 		    new_name, &equal);
+ 
+ 		if (GSS_ERROR(ctx->major)) {
+@@ -318,9 +391,9 @@ ssh_gssapi_getclient(Gssctxt *ctx, ssh_g
+ 
+ 		debug("Marking rekeyed credentials for export");
+ 
+-		gss_release_name(&ctx->minor, &client->name);
++		gss_release_name(&ctx->minor, &client->cred_name);
+ 		gss_release_cred(&ctx->minor, &client->creds);
+-		client->name = new_name;
++		client->cred_name = new_name;
+ 		client->creds = ctx->client_creds;
+         	ctx->client_creds = GSS_C_NO_CREDENTIAL;
+ 		client->updated = 1;
+@@ -337,12 +410,17 @@ ssh_gssapi_getclient(Gssctxt *ctx, ssh_g
+ 		i++;
+ 	}
+ 
+-	if (client->mech == NULL)
+-		return GSS_S_FAILURE;
++	if (client->oid.elements == NULL)
++	  client->oid = *ctx->oid;
++	if (client->mech == NULL) {
++	  if (ssh_gssapi_generic_mech_ptr)
++	    client->mech = (ssh_gssapi_mech *) ssh_gssapi_generic_mech_ptr;
++	  else return GSS_S_FAILURE;
++	}
+ 
+ 	if (ctx->client_creds &&
+ 	    (ctx->major = gss_inquire_cred_by_mech(&ctx->minor,
+-	     ctx->client_creds, ctx->oid, &client->name, NULL, NULL, NULL))) {
++	     ctx->client_creds, ctx->oid, &client->cred_name, NULL, NULL, NULL))) {
+ 		ssh_gssapi_error(ctx);
+ 		return (ctx->major);
+ 	}
+@@ -359,11 +437,16 @@ ssh_gssapi_getclient(Gssctxt *ctx, ssh_g
+ 		return (ctx->major);
+ 	}
+ 
+-	if ((ctx->major = ssh_gssapi_parse_ename(ctx,&ename,
++	if ((client->mech->oid.elements != NULL) &&
++	    (ctx->major = ssh_gssapi_parse_ename(ctx,&ename,
+ 	    &client->exportedname))) {
+ 		return (ctx->major);
+ 	}
+ 
++	if ((ctx->major = gss_duplicate_name(&ctx->minor, ctx->client,
++					     &client->ctx_name)))
++	  return ctx->major;
++	    
+ 	gss_release_buffer(&ctx->minor, &ename);
+ 
+ 	/* We can't copy this structure, so we just move the pointer to it */
+@@ -417,11 +500,6 @@ ssh_gssapi_userok(char *user, struct pas
+ {
+ 	OM_uint32 lmin;
+ 
+-	if (gssapi_client.exportedname.length == 0 ||
+-	    gssapi_client.exportedname.value == NULL) {
+-		debug("No suitable client data");
+-		return 0;
+-	}
+ 	if (gssapi_client.mech && gssapi_client.mech->userok)
+ 		if ((*gssapi_client.mech->userok)(&gssapi_client, user)) {
+ 			gssapi_client.used = 1;
+@@ -432,6 +510,7 @@ ssh_gssapi_userok(char *user, struct pas
+ 			gss_release_buffer(&lmin, &gssapi_client.displayname);
+ 			gss_release_buffer(&lmin, &gssapi_client.exportedname);
+ 			gss_release_cred(&lmin, &gssapi_client.creds);
++			gss_release_name(&lmin, &gssapi_client.ctx_name);
+ 			memset(&gssapi_client, 0, sizeof(ssh_gssapi_client));
+ 			return 0;
+ 		}
